@@ -204,7 +204,7 @@ func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, sig
 		lastTxBytes = 0
 		return
 	}
-	out, err := exec.Command("ifconfig", dev).Output()
+	out, err := exec.Command("iw", "dev", dev, "link").Output()
 	if err != nil {
 		return
 	}
