@@ -69,7 +69,26 @@ var AudioFmt = func(vol int, muted bool) string {
 }
 
 var TimeFmt = func(t time.Time) string {
-	return t.Format("01/02-15:04")
+	// get hour
+	hour := t.Hour() % 12
+	// get half-hour
+	halfHour := (t.Minute() + 1) / 30
+	clockEmojis := [24]string{
+		"🕛", "🕧",
+		"🕐", "🕜",
+		"🕑", "🕝",
+		"🕒", "🕞",
+		"🕓", "🕟",
+		"🕔", "🕠",
+		"🕕", "🕡",
+		"🕖", "🕢",
+		"🕗", "🕣",
+		"🕘", "🕤",
+		"🕙", "🕥",
+		"🕚", "🕦",
+	}
+	clockEmoji := clockEmojis[hour*2+halfHour]
+	return t.Format("📅01/02/2006 " + clockEmoji + "15:04")
 }
 
 var StatusFmt = func(stats []string) string {
