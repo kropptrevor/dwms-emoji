@@ -82,7 +82,7 @@ func (f format) String() string {
 	return sb.String()
 }
 
-var WifiFmt = func(dev, ssid string, rxBytes, txBytes, signal int, up bool) string {
+func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) string {
 	if !up {
 		return ""
 	}
@@ -102,28 +102,28 @@ var WifiFmt = func(dev, ssid string, rxBytes, txBytes, signal int, up bool) stri
 	return strings.Join(strs, " ")
 }
 
-var WiredFmt = func(dev string, speed int, up bool) string {
+func wiredFmt(dev string, speed int, up bool) string {
 	if !up {
 		return ""
 	}
 	return "[=" + strconv.Itoa(speed)
 }
 
-var NetFmt = func(devs []string) string {
+func netFmt(devs []string) string {
 	return strings.Join(filterEmpty(devs), " ")
 }
 
-var BatteryDevFmt = func(pct int, state string) string {
+func batteryDevFmt(pct int, state string) string {
 	spct := strconv.Itoa(pct)
 	smoji := map[string]string{"Charging": "🔌", "Full": "🔌", "Discharging": "🔋"}[state]
 	return format{smoji, spct, 3}.String()
 }
 
-var BatteryFmt = func(bats []string) string {
+func batteryFmt(bats []string) string {
 	return strings.Join(bats, "/")
 }
 
-var AudioFmt = func(vol int, muted bool) string {
+func audioFmt(vol int, muted bool) string {
 	svol := strconv.Itoa(vol)
 	volmoji := ""
 	switch {
@@ -139,7 +139,7 @@ var AudioFmt = func(vol int, muted bool) string {
 	return format{volmoji, svol, 3}.String()
 }
 
-var TimeFmt = func(t time.Time) string {
+func timeFmt(t time.Time) string {
 	offsetTime := t.Add(time.Minute * 15)
 	// get hour
 	hour := offsetTime.Hour() % 12
@@ -163,7 +163,7 @@ var TimeFmt = func(t time.Time) string {
 	return format{"📅", t.Format("01/02/2006"), 10}.String() + " " + format{clockEmoji, t.Format("15:04"), 5}.String()
 }
 
-var StatusFmt = func(stats []string) string {
+func statusFmt(stats []string) string {
 	return " " + strings.Join(filterEmpty(stats), " ") + " "
 }
 
@@ -249,10 +249,10 @@ func netDevStatus(dev string) string {
 	up := err == nil && status == "up"
 	if _, err = os.Stat(filepath.Join(netSysPath, dev, "wireless")); err == nil {
 		ssid, rxBytes, txBytes, signal := wifiStatus(dev, up)
-		return WifiFmt(dev, ssid, rxBytes, txBytes, signal, up)
+		return wifiFmt(dev, ssid, rxBytes, txBytes, signal, up)
 	}
 	speed := wiredStatus(dev)
-	return WiredFmt(dev, speed, up)
+	return wiredFmt(dev, speed, up)
 }
 
 func netStatus(devs ...string) statusFunc {
@@ -261,7 +261,7 @@ func netStatus(devs ...string) statusFunc {
 		for _, dev := range devs {
 			netStats = append(netStats, netDevStatus(dev))
 		}
-		return NetFmt(netStats)
+		return netFmt(netStats)
 	}
 }
 
@@ -274,7 +274,7 @@ func batteryDevStatus(batt string) string {
 	if err != nil {
 		return Unknown
 	}
-	return BatteryDevFmt(pct, status)
+	return batteryDevFmt(pct, status)
 }
 
 func batteryStatus(batts ...string) statusFunc {
@@ -283,7 +283,7 @@ func batteryStatus(batts ...string) statusFunc {
 		for _, batt := range batts {
 			battStats = append(battStats, batteryDevStatus(batt))
 		}
-		return BatteryFmt(battStats)
+		return batteryFmt(battStats)
 	}
 }
 
@@ -303,7 +303,7 @@ func alsaAudioStatus(args ...string) statusFunc {
 			return Unknown
 		}
 		muted := (string(match[2]) == "off")
-		return AudioFmt(vol, muted)
+		return audioFmt(vol, muted)
 	}
 }
 
@@ -331,12 +331,12 @@ func pulseAudioStatus(args ...string) statusFunc {
 		if err != nil {
 			return Unknown
 		}
-		return AudioFmt(vol, muted)
+		return audioFmt(vol, muted)
 	}
 }
 
 func timeStatus() string {
-	return TimeFmt(time.Now())
+	return timeFmt(time.Now())
 }
 
 func status() string {
@@ -344,7 +344,7 @@ func status() string {
 	for _, item := range Items {
 		stats = append(stats, item())
 	}
-	return StatusFmt(stats)
+	return statusFmt(stats)
 }
 
 func setStatus(statusText string) {
