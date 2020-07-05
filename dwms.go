@@ -5,7 +5,7 @@ package main
 
 import (
 	"bytes"
-	"fmt"
+	"container/ring"
 	"io/ioutil"
 	"log"
 	"os"
@@ -30,19 +30,76 @@ const (
 )
 
 var (
-	ssidRE    = regexp.MustCompile(`SSID:\s+(.*)`)
-	bitrateRE = regexp.MustCompile(`tx bitrate:\s+(\d+)`)
-	signalRE  = regexp.MustCompile(`signal:\s+(-\d+)`)
-	amixerRE  = regexp.MustCompile(`\[(\d+)%\].*\[(\w+)\]`)
-	xconn     *xgb.Conn
-	xroot     xproto.Window
+	ssidRE      = regexp.MustCompile(`SSID:\s+(.*)`)
+	rxBytesRE   = regexp.MustCompile(`RX:\s+(\d+)`)
+	txBytesRE   = regexp.MustCompile(`TX:\s+(\d+)`)
+	signalRE    = regexp.MustCompile(`signal:\s+(-\d+)`)
+	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[(\w+)\]`)
+	xconn       *xgb.Conn
+	xroot       xproto.Window
+	rxAvg       *ring.Ring
+	txAvg       *ring.Ring
+	lastRxBytes int
+	lastTxBytes int
 )
 
-var WifiFmt = func(dev, ssid string, bitrate, signal int, up bool) string {
+func formatBytes(bs int) string {
+	const (
+		kilo = 1_000
+		mega = 1_000 * kilo
+		giga = 1_000 * mega
+	)
+	val, unit := bs, "B"
+	switch {
+	case bs >= giga:
+		val, unit = bs/giga, "G"
+	case bs >= mega:
+		val, unit = bs/mega, "M"
+	case bs >= kilo:
+		val, unit = bs/kilo, "K"
+	}
+	return strconv.Itoa(val) + unit
+}
+
+type format struct {
+	emoji string
+	text  string
+	size  int
+}
+
+func (f format) String() string {
+	size := len(f.emoji) + f.size + 1
+	var sb strings.Builder
+	sb.Grow(size)
+	sb.WriteString(f.emoji)
+	sb.WriteRune(' ')
+	if len(f.text) > f.size {
+		sb.WriteString(f.text[:f.size])
+	} else {
+		sb.WriteString(f.text)
+		sb.WriteString(strings.Repeat(" ", f.size-len(f.text)))
+	}
+	return sb.String()
+}
+
+var WifiFmt = func(dev, ssid string, rxBytes, txBytes, signal int, up bool) string {
 	if !up {
 		return ""
 	}
-	return fmt.Sprintf("\\/%s/%d/%d", ssid, bitrate, signal)
+	rx := formatBytes(rxBytes)
+	tx := formatBytes(rxBytes)
+	ssig := strconv.Itoa(signal)
+	fmts := []format{
+		{"📡", ssid, 10},
+		{"⬇", rx, 4},
+		{"⬆", tx, 4},
+		{"📶", ssig, 3},
+	}
+	var strs []string
+	for _, f := range fmts {
+		strs = append(strs, f.String())
+	}
+	return strings.Join(strs, " ")
 }
 
 var WiredFmt = func(dev string, speed int, up bool) string {
@@ -57,15 +114,29 @@ var NetFmt = func(devs []string) string {
 }
 
 var BatteryDevFmt = func(pct int, state string) string {
-	return strconv.Itoa(pct) + map[string]string{"Charging": "+", "Discharging": "-"}[state]
+	spct := strconv.Itoa(pct)
+	smoji := map[string]string{"Charging": "🔌", "Full": "🔌", "Discharging": "🔋"}[state]
+	return format{smoji, spct, 3}.String()
 }
 
 var BatteryFmt = func(bats []string) string {
-	return "[]" + strings.Join(bats, "/")
+	return strings.Join(bats, "/")
 }
 
 var AudioFmt = func(vol int, muted bool) string {
-	return map[bool]string{false: "<)", true: "<X"}[muted] + strconv.Itoa(vol)
+	svol := strconv.Itoa(vol)
+	volmoji := ""
+	switch {
+	case muted:
+		volmoji = "🔇"
+	case vol < 33:
+		volmoji = "🔈"
+	case vol < 66:
+		volmoji = "🔉"
+	default:
+		volmoji = "🔊"
+	}
+	return format{volmoji, svol, 3}.String()
 }
 
 var TimeFmt = func(t time.Time) string {
@@ -96,18 +167,58 @@ var StatusFmt = func(stats []string) string {
 	return " " + strings.Join(filterEmpty(stats), " ") + " "
 }
 
-func wifiStatus(dev string) (string, int, int) {
-	ssid, bitrate, signal := "", 0, 0
+func getByteDiff(rxBytes, txBytes int) (int, int) {
+	defer func() {
+		lastRxBytes, lastTxBytes = rxBytes, txBytes
+	}()
+	if rxBytes < lastRxBytes {
+		return 0, 0
+	}
+	if txBytes < lastTxBytes {
+		return 0, 0
+	}
+	return rxBytes - lastRxBytes, txBytes - lastTxBytes
+}
+
+func getRollingAverage(roll *ring.Ring) int {
+	sum := 0
+	count := 0
+	for i := 0; i < roll.Len(); i++ {
+		val, ok := roll.Move(i).Value.(int)
+		if ok {
+			sum += val
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / count
+}
+
+func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, signal int) {
+	if !up {
+		rxAvg = ring.New(5)
+		txAvg = ring.New(5)
+		lastRxBytes = 0
+		lastTxBytes = 0
+		return
+	}
 	out, err := exec.Command("iw", "dev", dev, "link").Output()
 	if err != nil {
-		return ssid, bitrate, signal
+		return
 	}
 	if match := ssidRE.FindSubmatch(out); len(match) >= 2 {
 		ssid = string(match[1])
 	}
-	if match := bitrateRE.FindSubmatch(out); len(match) >= 2 {
+	if match := rxBytesRE.FindSubmatch(out); len(match) >= 2 {
 		if br, err := strconv.Atoi(string(match[1])); err == nil {
-			bitrate = br
+			rxBytes = br
+		}
+	}
+	if match := txBytesRE.FindSubmatch(out); len(match) >= 2 {
+		if br, err := strconv.Atoi(string(match[1])); err == nil {
+			txBytes = br
 		}
 	}
 	if match := signalRE.FindSubmatch(out); len(match) >= 2 {
@@ -115,7 +226,14 @@ func wifiStatus(dev string) (string, int, int) {
 			signal = sig
 		}
 	}
-	return ssid, bitrate, signal
+	rxBytes, txBytes = getByteDiff(rxBytes, txBytes)
+	rxAvg.Value = rxBytes
+	rxAvg = rxAvg.Next()
+	txAvg.Value = txBytes
+	txAvg = txAvg.Next()
+	rxBytes = getRollingAverage(rxAvg)
+	txBytes = getRollingAverage(txAvg)
+	return
 }
 
 func wiredStatus(dev string) int {
@@ -130,8 +248,8 @@ func netDevStatus(dev string) string {
 	status, err := sysfsStringVal(filepath.Join(netSysPath, dev, "operstate"))
 	up := err == nil && status == "up"
 	if _, err = os.Stat(filepath.Join(netSysPath, dev, "wireless")); err == nil {
-		ssid, bitrate, signal := wifiStatus(dev)
-		return WifiFmt(dev, ssid, bitrate, signal, up)
+		ssid, rxBytes, txBytes, signal := wifiStatus(dev, up)
+		return WifiFmt(dev, ssid, rxBytes, txBytes, signal, up)
 	}
 	speed := wiredStatus(dev)
 	return WiredFmt(dev, speed, up)
@@ -169,7 +287,7 @@ func batteryStatus(batts ...string) statusFunc {
 	}
 }
 
-func audioStatus(args ...string) statusFunc {
+func alsaAudioStatus(args ...string) statusFunc {
 	args = append(args, []string{"get", "Master"}...)
 	return func() string {
 		out, err := exec.Command("amixer", args...).Output()
@@ -185,6 +303,34 @@ func audioStatus(args ...string) statusFunc {
 			return Unknown
 		}
 		muted := (string(match[2]) == "off")
+		return AudioFmt(vol, muted)
+	}
+}
+
+func pulseAudioStatus(args ...string) statusFunc {
+	volargs := append(args, []string{"--get-volume"}...)
+	muteargs := append(args, []string{"--get-mute"}...)
+	return func() string {
+		out, err := exec.Command("pulsemixer", muteargs...).Output()
+		if err != nil {
+			return Unknown
+		}
+		muted := false
+		if strings.TrimSpace(string(out)) == "1" {
+			muted = true
+		}
+		out, err = exec.Command("pulsemixer", volargs...).Output()
+		if err != nil {
+			return Unknown
+		}
+		match := strings.Split(string(out), " ")
+		if len(match) < 2 {
+			return Unknown
+		}
+		vol, err := strconv.Atoi(match[0])
+		if err != nil {
+			return Unknown
+		}
 		return AudioFmt(vol, muted)
 	}
 }
@@ -265,5 +411,7 @@ func main() {
 	}
 	defer xconn.Close()
 	xroot = xproto.Setup(xconn).DefaultScreen(xconn).Root
+	rxAvg = ring.New(5)
+	txAvg = ring.New(5)
 	run()
 }
