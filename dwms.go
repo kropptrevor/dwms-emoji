@@ -160,7 +160,7 @@ var TimeFmt = func(t time.Time) string {
 		"🕚", "🕦",
 	}
 	clockEmoji := clockEmojis[hour*2+halfHour]
-	return t.Format("📅01/02/2006 " + clockEmoji + "15:04")
+	return format{"📅", t.Format("01/02/2006"), 10}.String() + " " + format{clockEmoji, t.Format("15:04"), 5}.String()
 }
 
 var StatusFmt = func(stats []string) string {
