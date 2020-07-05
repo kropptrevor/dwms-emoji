@@ -34,7 +34,7 @@ var (
 	rxBytesRE   = regexp.MustCompile(`RX:\s+(\d+)`)
 	txBytesRE   = regexp.MustCompile(`TX:\s+(\d+)`)
 	signalRE    = regexp.MustCompile(`signal:\s+(-\d+)`)
-	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[(\w+)\]`)
+	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[([.\w]+)\]`)
 	xconn       *xgb.Conn
 	xroot       xproto.Window
 	rxAvg       *ring.Ring
