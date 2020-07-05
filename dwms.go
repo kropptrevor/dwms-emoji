@@ -69,10 +69,11 @@ var AudioFmt = func(vol int, muted bool) string {
 }
 
 var TimeFmt = func(t time.Time) string {
+	offsetTime := t.Add(time.Minute * 15)
 	// get hour
-	hour := t.Hour() % 12
+	hour := offsetTime.Hour() % 12
 	// get half-hour
-	halfHour := (t.Minute() + 1) / 30
+	halfHour := (offsetTime.Minute() + 1) / 30
 	clockEmojis := [24]string{
 		"🕛", "🕧",
 		"🕐", "🕜",
