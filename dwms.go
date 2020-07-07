@@ -32,7 +32,7 @@ const (
 var (
 	ssidRE      = regexp.MustCompile(`SSID:\s+(.*)`)
 	signalRE    = regexp.MustCompile(`signal:\s+(-\d+)`)
-	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[(\w+)\]`)
+	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[([.\w]+)\]`)
 	xconn       *xgb.Conn
 	xroot       xproto.Window
 	rxAvg       *ring.Ring
@@ -137,11 +137,12 @@ func audioFmt(vol int, muted bool) string {
 	return format{volmoji, svol, 3}.String()
 }
 
-func timeFmt(t time.Time) string {
+func timeFmt(t time.Time, dateFormat string, timeFormat string) string {
+	// shift from last half-hour to closest half-hour
 	offsetTime := t.Add(time.Minute * 15)
-	// get hour
+	// get clock row
 	hour := offsetTime.Hour() % 12
-	// get half-hour
+	// get clock col
 	halfHour := (offsetTime.Minute() + 1) / 30
 	clockEmojis := [24]string{
 		"🕛", "🕧",
@@ -158,7 +159,18 @@ func timeFmt(t time.Time) string {
 		"🕚", "🕦",
 	}
 	clockEmoji := clockEmojis[hour*2+halfHour]
-	return format{"📅", t.Format("01/02/2006"), 10}.String() + " " + format{clockEmoji, t.Format("15:04"), 5}.String()
+
+	dateFmted := t.Format(dateFormat)
+	timeFmted := t.Format(timeFormat)
+
+	// size to the largest possible value to prevent the size from changing after updates
+	large := time.Date(2006, 10, 11, 12, 13, 15, 500, t.Location())
+	largeDate := large.Format(dateFormat)
+	largeTime := large.Format(timeFormat)
+
+	dateResult := format{"📅", dateFmted, len(largeDate)}.String()
+	timeResult := format{clockEmoji, timeFmted, len(largeTime)}.String()
+	return dateResult + " " + timeResult
 }
 
 func statusFmt(stats []string) string {
@@ -336,8 +348,12 @@ func pulseAudioStatus(args ...string) statusFunc {
 	}
 }
 
-func timeStatus() string {
-	return timeFmt(time.Now())
+// Formatting represents the follow date and time:
+//  Mon Jan 2 15:04:05 -0700 MST 2006
+func timeStatus(dateFormat string, timeFormat string) statusFunc {
+	return func() string {
+		return timeFmt(time.Now(), dateFormat, timeFormat)
+	}
 }
 
 func status() string {
