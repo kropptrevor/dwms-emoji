@@ -170,7 +170,7 @@ func timeFmt(t time.Time, dateFormat string, timeFormat string) []string {
 }
 
 func statusFmt(stats []string) string {
-	return " " + strings.Join(filterEmpty(stats), " ") + " "
+	return " " + strings.Join(filterEmpty(stats), Delimiter) + " "
 }
 
 func getByteDiff(rxBytes, txBytes int) (int, int) {

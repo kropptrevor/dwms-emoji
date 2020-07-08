@@ -5,6 +5,7 @@ import (
 )
 
 const (
+	Delimiter    = " │ "
 	Unknown      = "?"
 	UpdatePeriod = 5 * time.Second
 )
