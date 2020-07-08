@@ -208,7 +208,11 @@ func getRollingAverage(roll *ring.Ring) int {
 	if count == 0 {
 		return 0
 	}
-	return sum / count
+	// Bytes per period
+	bpp := float64(sum) / float64(count)
+	secs := float64(UpdatePeriod) / float64(time.Second)
+	// Bytes per second
+	return int(bpp / secs)
 }
 
 func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, signal int) {
