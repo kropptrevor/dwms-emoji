@@ -31,8 +31,6 @@ const (
 
 var (
 	ssidRE      = regexp.MustCompile(`SSID:\s+(.*)`)
-	rxBytesRE   = regexp.MustCompile(`RX:\s+(\d+)`)
-	txBytesRE   = regexp.MustCompile(`TX:\s+(\d+)`)
 	signalRE    = regexp.MustCompile(`signal:\s+(-\d+)`)
 	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[([.\w]+)\]`)
 	xconn       *xgb.Conn
@@ -87,7 +85,7 @@ func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) string {
 		return ""
 	}
 	rx := formatBytes(rxBytes)
-	tx := formatBytes(rxBytes)
+	tx := formatBytes(txBytes)
 	ssig := strconv.Itoa(signal)
 	fmts := []format{
 		{"📡", ssid, 10},
@@ -183,13 +181,18 @@ func getByteDiff(rxBytes, txBytes int) (int, int) {
 	defer func() {
 		lastRxBytes, lastTxBytes = rxBytes, txBytes
 	}()
-	if rxBytes < lastRxBytes {
+	if rxBytes < lastRxBytes || txBytes < lastTxBytes {
 		return 0, 0
 	}
-	if txBytes < lastTxBytes {
-		return 0, 0
+	rx := 0
+	if lastRxBytes >= 0 {
+		rx = rxBytes - lastRxBytes
 	}
-	return rxBytes - lastRxBytes, txBytes - lastTxBytes
+	tx := 0
+	if lastTxBytes >= 0 {
+		tx = txBytes - lastTxBytes
+	}
+	return rx, tx
 }
 
 func getRollingAverage(roll *ring.Ring) int {
@@ -212,8 +215,8 @@ func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, sig
 	if !up {
 		rxAvg = ring.New(5)
 		txAvg = ring.New(5)
-		lastRxBytes = 0
-		lastTxBytes = 0
+		lastRxBytes = -1
+		lastTxBytes = -1
 		return
 	}
 	out, err := exec.Command("iw", "dev", dev, "link").Output()
@@ -223,15 +226,13 @@ func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, sig
 	if match := ssidRE.FindSubmatch(out); len(match) >= 2 {
 		ssid = string(match[1])
 	}
-	if match := rxBytesRE.FindSubmatch(out); len(match) >= 2 {
-		if br, err := strconv.Atoi(string(match[1])); err == nil {
-			rxBytes = br
-		}
+	rxBytes, err = sysfsIntVal(filepath.Join(netSysPath, dev, "statistics", "rx_bytes"))
+	if err != nil {
+		rxBytes = -1
 	}
-	if match := txBytesRE.FindSubmatch(out); len(match) >= 2 {
-		if br, err := strconv.Atoi(string(match[1])); err == nil {
-			txBytes = br
-		}
+	txBytes, err = sysfsIntVal(filepath.Join(netSysPath, dev, "statistics", "tx_bytes"))
+	if err != nil {
+		txBytes = -1
 	}
 	if match := signalRE.FindSubmatch(out); len(match) >= 2 {
 		if sig, err := strconv.Atoi(string(match[1])); err == nil {
@@ -429,5 +430,7 @@ func main() {
 	xroot = xproto.Setup(xconn).DefaultScreen(xconn).Root
 	rxAvg = ring.New(5)
 	txAvg = ring.New(5)
+	lastRxBytes = -1
+	lastTxBytes = -1
 	run()
 }
