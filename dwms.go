@@ -22,7 +22,7 @@ import (
 	"github.com/BurntSushi/xgb/xproto"
 )
 
-type statusFunc func() string
+type statusFunc func() []string
 
 const (
 	battSysPath = "/sys/class/power_supply"
@@ -80,9 +80,9 @@ func (f format) String() string {
 	return sb.String()
 }
 
-func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) string {
+func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) []string {
 	if !up {
-		return ""
+		return []string{}
 	}
 	rx := formatBytes(rxBytes)
 	tx := formatBytes(txBytes)
@@ -97,28 +97,24 @@ func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) string {
 	for _, f := range fmts {
 		strs = append(strs, f.String())
 	}
-	return strings.Join(strs, " ")
+	return strs
 }
 
-func wiredFmt(dev string, speed int, up bool) string {
+func wiredFmt(dev string, speed int, up bool) []string {
 	if !up {
-		return ""
+		return []string{}
 	}
-	return "[=" + strconv.Itoa(speed)
+	return []string{"[=" + strconv.Itoa(speed)}
 }
 
-func netFmt(devs []string) string {
-	return strings.Join(filterEmpty(devs), " ")
+func netFmt(devs []string) []string {
+	return filterEmpty(devs)
 }
 
 func batteryDevFmt(pct int, state string) string {
 	spct := strconv.Itoa(pct)
 	smoji := map[string]string{"Charging": "🔌", "Full": "🔌", "Discharging": "🔋"}[state]
 	return format{smoji, spct, 3}.String()
-}
-
-func batteryFmt(bats []string) string {
-	return strings.Join(bats, "/")
 }
 
 func audioFmt(vol int, muted bool) string {
@@ -137,7 +133,7 @@ func audioFmt(vol int, muted bool) string {
 	return format{volmoji, svol, 3}.String()
 }
 
-func timeFmt(t time.Time, dateFormat string, timeFormat string) string {
+func timeFmt(t time.Time, dateFormat string, timeFormat string) []string {
 	// shift from last half-hour to closest half-hour
 	offsetTime := t.Add(time.Minute * 15)
 	// get clock row
@@ -170,11 +166,11 @@ func timeFmt(t time.Time, dateFormat string, timeFormat string) string {
 
 	dateResult := format{"📅", dateFmted, len(largeDate)}.String()
 	timeResult := format{clockEmoji, timeFmted, len(largeTime)}.String()
-	return dateResult + " " + timeResult
+	return []string{dateResult, timeResult}
 }
 
 func statusFmt(stats []string) string {
-	return " " + strings.Join(filterEmpty(stats), " ") + " "
+	return " " + strings.Join(filterEmpty(stats), Delimiter) + " "
 }
 
 func getByteDiff(rxBytes, txBytes int) (int, int) {
@@ -257,7 +253,7 @@ func wiredStatus(dev string) int {
 	return speed
 }
 
-func netDevStatus(dev string) string {
+func netDevStatus(dev string) []string {
 	status, err := sysfsStringVal(filepath.Join(netSysPath, dev, "operstate"))
 	up := err == nil && status == "up"
 	if _, err = os.Stat(filepath.Join(netSysPath, dev, "wireless")); err == nil {
@@ -269,10 +265,10 @@ func netDevStatus(dev string) string {
 }
 
 func netStatus(devs ...string) statusFunc {
-	return func() string {
+	return func() []string {
 		var netStats []string
 		for _, dev := range devs {
-			netStats = append(netStats, netDevStatus(dev))
+			netStats = append(netStats, netDevStatus(dev)...)
 		}
 		return netFmt(netStats)
 	}
@@ -291,42 +287,42 @@ func batteryDevStatus(batt string) string {
 }
 
 func batteryStatus(batts ...string) statusFunc {
-	return func() string {
+	return func() []string {
 		var battStats []string
 		for _, batt := range batts {
 			battStats = append(battStats, batteryDevStatus(batt))
 		}
-		return batteryFmt(battStats)
+		return battStats
 	}
 }
 
 func alsaAudioStatus(args ...string) statusFunc {
 	args = append(args, []string{"get", "Master"}...)
-	return func() string {
+	return func() []string {
 		out, err := exec.Command("amixer", args...).Output()
 		if err != nil {
-			return Unknown
+			return []string{Unknown}
 		}
 		match := amixerRE.FindSubmatch(out)
 		if len(match) < 3 {
-			return Unknown
+			return []string{Unknown}
 		}
 		vol, err := strconv.Atoi(string(match[1]))
 		if err != nil {
-			return Unknown
+			return []string{Unknown}
 		}
 		muted := (string(match[2]) == "off")
-		return audioFmt(vol, muted)
+		return []string{audioFmt(vol, muted)}
 	}
 }
 
 func pulseAudioStatus(args ...string) statusFunc {
 	volargs := append(args, []string{"--get-volume"}...)
 	muteargs := append(args, []string{"--get-mute"}...)
-	return func() string {
+	return func() []string {
 		out, err := exec.Command("pulsemixer", muteargs...).Output()
 		if err != nil {
-			return Unknown
+			return []string{Unknown}
 		}
 		muted := false
 		if strings.TrimSpace(string(out)) == "1" {
@@ -334,24 +330,24 @@ func pulseAudioStatus(args ...string) statusFunc {
 		}
 		out, err = exec.Command("pulsemixer", volargs...).Output()
 		if err != nil {
-			return Unknown
+			return []string{Unknown}
 		}
 		match := strings.Split(string(out), " ")
 		if len(match) < 2 {
-			return Unknown
+			return []string{Unknown}
 		}
 		vol, err := strconv.Atoi(match[0])
 		if err != nil {
-			return Unknown
+			return []string{Unknown}
 		}
-		return audioFmt(vol, muted)
+		return []string{audioFmt(vol, muted)}
 	}
 }
 
 // Formatting represents the follow date and time:
 //  Mon Jan 2 15:04:05 -0700 MST 2006
 func timeStatus(dateFormat string, timeFormat string) statusFunc {
-	return func() string {
+	return func() []string {
 		return timeFmt(time.Now(), dateFormat, timeFormat)
 	}
 }
@@ -359,7 +355,7 @@ func timeStatus(dateFormat string, timeFormat string) statusFunc {
 func status() string {
 	var stats []string
 	for _, item := range Items {
-		stats = append(stats, item())
+		stats = append(stats, item()...)
 	}
 	return statusFmt(stats)
 }
