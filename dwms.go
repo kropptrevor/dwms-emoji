@@ -139,7 +139,7 @@ func timeFmt(t time.Time, dateFormat string, timeFormat string) []string {
 	// get clock row
 	hour := offsetTime.Hour() % 12
 	// get clock col
-	halfHour := (offsetTime.Minute() + 1) / 30
+	halfHour := offsetTime.Minute() / 30
 	clockEmojis := [24]string{
 		"🕛", "🕧",
 		"🕐", "🕜",
