@@ -30,15 +30,9 @@ const (
 )
 
 var (
-	ssidRE      = regexp.MustCompile(`SSID:\s+(.*)`)
-	signalRE    = regexp.MustCompile(`signal:\s+(-\d+)`)
-	amixerRE    = regexp.MustCompile(`\[(\d+)%\].*\[([.\w]+)\]`)
-	xconn       *xgb.Conn
-	xroot       xproto.Window
-	rxAvg       *ring.Ring
-	txAvg       *ring.Ring
-	lastRxBytes int
-	lastTxBytes int
+	ssidRE   = regexp.MustCompile(`SSID:\s+(.*)`)
+	signalRE = regexp.MustCompile(`signal:\s+(-\d+)`)
+	amixerRE = regexp.MustCompile(`\[(\d+)%\].*\[([.\w]+)\]`)
 )
 
 func formatBytes(bs int) string {
@@ -80,6 +74,24 @@ func (f format) String() string {
 	return sb.String()
 }
 
+type netUsageTracker struct {
+	dev         string
+	rxAvg       *ring.Ring
+	txAvg       *ring.Ring
+	lastRxBytes int
+	lastTxBytes int
+}
+
+func newSpeedTracker(dev string) *netUsageTracker {
+	return &netUsageTracker{
+		dev:         dev,
+		rxAvg:       ring.New(5),
+		txAvg:       ring.New(5),
+		lastRxBytes: -1,
+		lastTxBytes: -1,
+	}
+}
+
 func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) []string {
 	if !up {
 		return []string{}
@@ -100,11 +112,22 @@ func wifiFmt(dev, ssid string, rxBytes, txBytes, signal int, up bool) []string {
 	return strs
 }
 
-func wiredFmt(dev string, speed int, up bool) []string {
+func wiredFmt(dev string, rxBytes int, txBytes int, up bool) []string {
 	if !up {
 		return []string{}
 	}
-	return []string{"[=" + strconv.Itoa(speed)}
+	rx := formatBytes(rxBytes)
+	tx := formatBytes(txBytes)
+	fmts := []format{
+		{"🌐", dev, 10},
+		{"⬇", rx, 4},
+		{"⬆", tx, 4},
+	}
+	var strs []string
+	for _, f := range fmts {
+		strs = append(strs, f.String())
+	}
+	return strs
 }
 
 func netFmt(devs []string) []string {
@@ -173,20 +196,20 @@ func statusFmt(stats []string) string {
 	return " " + strings.Join(filterEmpty(stats), Delimiter) + " "
 }
 
-func getByteDiff(rxBytes, txBytes int) (int, int) {
+func (nt *netUsageTracker) getByteDiff(rxBytes, txBytes int) (int, int) {
 	defer func() {
-		lastRxBytes, lastTxBytes = rxBytes, txBytes
+		nt.lastRxBytes, nt.lastTxBytes = rxBytes, txBytes
 	}()
-	if rxBytes < lastRxBytes || txBytes < lastTxBytes {
+	if rxBytes < nt.lastRxBytes || txBytes < nt.lastTxBytes {
 		return 0, 0
 	}
 	rx := 0
-	if lastRxBytes >= 0 {
-		rx = rxBytes - lastRxBytes
+	if nt.lastRxBytes >= 0 {
+		rx = rxBytes - nt.lastRxBytes
 	}
 	tx := 0
-	if lastTxBytes >= 0 {
-		tx = txBytes - lastTxBytes
+	if nt.lastTxBytes >= 0 {
+		tx = txBytes - nt.lastTxBytes
 	}
 	return rx, tx
 }
@@ -211,12 +234,12 @@ func getRollingAverage(roll *ring.Ring) int {
 	return int(bpp / secs)
 }
 
-func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, signal int) {
+func (nt *netUsageTracker) wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, signal int) {
 	if !up {
-		rxAvg = ring.New(5)
-		txAvg = ring.New(5)
-		lastRxBytes = -1
-		lastTxBytes = -1
+		nt.rxAvg = ring.New(5)
+		nt.txAvg = ring.New(5)
+		nt.lastRxBytes = -1
+		nt.lastTxBytes = -1
 		return
 	}
 	out, err := exec.Command("iw", "dev", dev, "link").Output()
@@ -239,40 +262,62 @@ func wifiStatus(dev string, up bool) (ssid string, rxBytes int, txBytes int, sig
 			signal = sig
 		}
 	}
-	rxBytes, txBytes = getByteDiff(rxBytes, txBytes)
-	rxAvg.Value = rxBytes
-	rxAvg = rxAvg.Next()
-	txAvg.Value = txBytes
-	txAvg = txAvg.Next()
-	rxBytes = getRollingAverage(rxAvg)
-	txBytes = getRollingAverage(txAvg)
+	rxBytes, txBytes = nt.getByteDiff(rxBytes, txBytes)
+	nt.rxAvg.Value = rxBytes
+	nt.rxAvg = nt.rxAvg.Next()
+	nt.txAvg.Value = txBytes
+	nt.txAvg = nt.txAvg.Next()
+	rxBytes = getRollingAverage(nt.rxAvg)
+	txBytes = getRollingAverage(nt.txAvg)
 	return
 }
 
-func wiredStatus(dev string) int {
-	speed, err := sysfsIntVal(filepath.Join(netSysPath, dev, "speed"))
-	if err != nil {
-		return 0
+func (nt *netUsageTracker) wiredStatus(dev string, up bool) (rxBytes int, txBytes int) {
+	if !up {
+		nt.rxAvg = ring.New(5)
+		nt.txAvg = ring.New(5)
+		nt.lastRxBytes = -1
+		nt.lastTxBytes = -1
+		return
 	}
-	return speed
+	rxBytes, err := sysfsIntVal(filepath.Join(netSysPath, dev, "statistics", "rx_bytes"))
+	if err != nil {
+		rxBytes = -1
+	}
+	txBytes, err = sysfsIntVal(filepath.Join(netSysPath, dev, "statistics", "tx_bytes"))
+	if err != nil {
+		txBytes = -1
+	}
+	rxBytes, txBytes = nt.getByteDiff(rxBytes, txBytes)
+	nt.rxAvg.Value = rxBytes
+	nt.rxAvg = nt.rxAvg.Next()
+	nt.txAvg.Value = txBytes
+	nt.txAvg = nt.txAvg.Next()
+	rxBytes = getRollingAverage(nt.rxAvg)
+	txBytes = getRollingAverage(nt.txAvg)
+	return
 }
 
-func netDevStatus(dev string) []string {
-	status, err := sysfsStringVal(filepath.Join(netSysPath, dev, "operstate"))
+func (nt *netUsageTracker) netDevStatus() []string {
+	status, err := sysfsStringVal(filepath.Join(netSysPath, nt.dev, "operstate"))
 	up := err == nil && status == "up"
-	if _, err = os.Stat(filepath.Join(netSysPath, dev, "wireless")); err == nil {
-		ssid, rxBytes, txBytes, signal := wifiStatus(dev, up)
-		return wifiFmt(dev, ssid, rxBytes, txBytes, signal, up)
+	if _, err = os.Stat(filepath.Join(netSysPath, nt.dev, "wireless")); err == nil {
+		ssid, rxBytes, txBytes, signal := nt.wifiStatus(nt.dev, up)
+		return wifiFmt(nt.dev, ssid, rxBytes, txBytes, signal, up)
 	}
-	speed := wiredStatus(dev)
-	return wiredFmt(dev, speed, up)
+	rxBytes, txBytes := nt.wiredStatus(nt.dev, up)
+	return wiredFmt(nt.dev, rxBytes, txBytes, up)
 }
 
 func netStatus(devs ...string) statusFunc {
+	var trackers []*netUsageTracker
+	for _, dev := range devs {
+		trackers = append(trackers, newSpeedTracker(dev))
+	}
 	return func() []string {
 		var netStats []string
-		for _, dev := range devs {
-			netStats = append(netStats, netDevStatus(dev)...)
+		for _, st := range trackers {
+			netStats = append(netStats, st.netDevStatus()...)
 		}
 		return netFmt(netStats)
 	}
@@ -364,7 +409,7 @@ func status() string {
 	return statusFmt(stats)
 }
 
-func setStatus(statusText string) {
+func setStatus(xconn *xgb.Conn, xroot xproto.Window, statusText string) {
 	xproto.ChangeProperty(xconn, xproto.PropModeReplace, xroot, xproto.AtomWmName,
 		xproto.AtomString, 8, uint32(len(statusText)), []byte(statusText))
 }
@@ -399,9 +444,9 @@ func filterEmpty(strings []string) []string {
 	return filtStrings
 }
 
-func run() {
-	setStatus(status())
-	defer setStatus("") // cleanup
+func run(xconn *xgb.Conn, xroot xproto.Window) {
+	setStatus(xconn, xroot, status())
+	defer setStatus(xconn, xroot, "") // cleanup
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 	update := time.Tick(UpdatePeriod)
@@ -410,27 +455,23 @@ func run() {
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGUSR1:
-				setStatus(status())
+				setStatus(xconn, xroot, status())
 			default:
 				return
 			}
 		case <-update:
-			setStatus(status())
+			setStatus(xconn, xroot, status())
 		}
 	}
 }
 
 func main() {
 	var err error
-	xconn, err = xgb.NewConn()
+	xconn, err := xgb.NewConn()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer xconn.Close()
-	xroot = xproto.Setup(xconn).DefaultScreen(xconn).Root
-	rxAvg = ring.New(5)
-	txAvg = ring.New(5)
-	lastRxBytes = -1
-	lastTxBytes = -1
-	run()
+	xroot := xproto.Setup(xconn).DefaultScreen(xconn).Root
+	run(xconn, xroot)
 }
