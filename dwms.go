@@ -6,6 +6,8 @@ package main
 import (
 	"bytes"
 	"container/ring"
+	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -466,6 +468,30 @@ func run(xconn *xgb.Conn, xroot xproto.Window) {
 }
 
 func main() {
+	var daemon bool
+	flag.BoolVar(&daemon, "daemon", false, "daemonize process")
+	flag.Parse()
+
+	if daemon {
+		var args []string
+		for _, arg := range os.Args[1:] {
+			if strings.Contains(arg, "-daemon") {
+				continue
+			}
+			args = append(args, arg)
+		}
+		cmd := exec.Command(os.Args[0], args...)
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		err := cmd.Start()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to daemonize process: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	var err error
 	xconn, err := xgb.NewConn()
 	if err != nil {
