@@ -302,7 +302,12 @@ func (nt *netUsageTracker) wiredStatus(dev string, up bool) (rxBytes int, txByte
 
 func (nt *netUsageTracker) netDevStatus() []string {
 	status, err := sysfsStringVal(filepath.Join(netSysPath, nt.dev, "operstate"))
-	up := err == nil && status == "up"
+	up := false
+	if err == nil {
+		if status == "up" || status == "unknown" {
+			up = true
+		}
+	}
 	if _, err = os.Stat(filepath.Join(netSysPath, nt.dev, "wireless")); err == nil {
 		ssid, rxBytes, txBytes, signal := nt.wifiStatus(nt.dev, up)
 		return wifiFmt(nt.dev, ssid, rxBytes, txBytes, signal, up)
